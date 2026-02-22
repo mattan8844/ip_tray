@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ip-tray"
-version = "0.2.0"
+version = "0.3.0"
 description = "macOS menu bar app: show IP, speeds, totals with country flag"
 authors = [{ name = "IP Tray Maintainers" }]
 requires-python = ">=3.9"
@@ -20,6 +20,7 @@ dependencies = [
   "rumps>=0.4.0",
   "psutil>=5.9.0",
   "requests>=2.31.0",
+  "Pillow>=10.0.0",
 ]
 
 [project.scripts]

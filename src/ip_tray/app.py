@@ -1,8 +1,12 @@
 import time
 import logging
 from dataclasses import dataclass
+from collections import deque
+from pathlib import Path
+import tempfile
 
 import rumps
+from Foundation import NSRunLoop, NSRunLoopCommonModes
 
 from .net import (
     get_flag_emoji_for_country,
@@ -20,11 +24,15 @@ from .config import (
     load_runtime_config,
     save_runtime_config,
 )
+from .menu_graph_image import render_single_history_graph
 
 
 UPDATE_INTERVAL_SEC = 1.0
 PUBLIC_IP_REFRESH_SEC = 30.0
 REQUEST_TIMEOUT_SEC = 3.5
+HISTORY_SECONDS = 300
+GRAPH_IMAGE_WIDTH = 180
+GRAPH_IMAGE_HEIGHT = 32
 
 
 logger = logging.getLogger(__name__)
@@ -57,13 +65,18 @@ class IPTrayApp(rumps.App):
         self.config = load_runtime_config()
         self.last_public_refresh = 0.0
         self.notifications_enabled = self.config.notifications_enabled
+        self.up_history: deque[float] = deque(maxlen=HISTORY_SECONDS)
+        self.down_history: deque[float] = deque(maxlen=HISTORY_SECONDS)
+        self._graph_phase = False
 
         # Menu items
         self.menu_public_ip = rumps.MenuItem("Public IP: -")
         self.menu_local_ip = rumps.MenuItem("Local IP: -")
         self.menu_separator1 = rumps.separator
-        self.menu_speed_down = rumps.MenuItem("Down: -")
-        self.menu_speed_up = rumps.MenuItem("Up: -")
+        self.menu_recv_rate = rumps.MenuItem("接收速率: -")
+        self.menu_recv_graph = rumps.MenuItem("")
+        self.menu_send_rate = rumps.MenuItem("发送速率: -")
+        self.menu_send_graph = rumps.MenuItem("")
         self.menu_traffic = rumps.MenuItem("Traffic: -")
         self.menu_separator2 = rumps.separator
         self.menu_notifications = rumps.MenuItem("通知提醒", callback=self.toggle_notifications)
@@ -79,8 +92,10 @@ class IPTrayApp(rumps.App):
             self.menu_public_ip,
             self.menu_local_ip,
             self.menu_separator1,
-            self.menu_speed_down,
-            self.menu_speed_up,
+            self.menu_recv_rate,
+            self.menu_recv_graph,
+            self.menu_send_rate,
+            self.menu_send_graph,
             self.menu_traffic,
             self.menu_separator2,
             self.menu_notifications,
@@ -95,7 +110,11 @@ class IPTrayApp(rumps.App):
         # Start periodic timer (GUI-safe)
         self._timer = rumps.Timer(self._tick, self.config.update_interval)
         self._timer.start()
+        if getattr(self._timer, "_nstimer", None) is not None:
+            NSRunLoop.currentRunLoop().addTimer_forMode_(self._timer._nstimer, NSRunLoopCommonModes)
         self._update_menu_items()
+        self._update_menu_graph_images()
+        self._update_tray_flag()
 
     def on_quit(self, _):
         rumps.quit_application()
@@ -128,14 +147,17 @@ class IPTrayApp(rumps.App):
             down_bps, up_bps = get_network_speeds_tick()
             self.state.down_bps = down_bps
             self.state.up_bps = up_bps
+            self.down_history.append(down_bps)
+            self.up_history.append(up_bps)
 
             down_total, up_total = get_traffic_totals()
             self.state.down_total = down_total
             self.state.up_total = up_total
 
             # Update UI
-            self._update_menu_title()
+            self._update_tray_flag()
             self._update_menu_items()
+            self._update_menu_graph_images()
             self.menu_status.title = "状态: 正常"
         except (OSError, ValueError) as exc:
             logger.warning("Tick failed with recoverable error: %s", exc)
@@ -144,23 +166,45 @@ class IPTrayApp(rumps.App):
             logger.exception("Unexpected error in tray tick")
             self.menu_status.title = "状态: 内部错误"
 
-    def _update_menu_title(self):
-        flag = get_flag_emoji_for_country(self.state.country_code) if self.state.country_code else "🏳️"
-        # Try to keep it compact; show a short code with speeds
-        d = human_speed(self.state.down_bps)
-        u = human_speed(self.state.up_bps)
-        self.title = f"{flag} ↓{d} ↑{u}"
+    def _update_tray_flag(self):
+        self.title = get_flag_emoji_for_country(self.state.country_code) if self.state.country_code else "🏳️"
 
     def _update_menu_items(self):
         self.menu_public_ip.title = f"Public IP: {self.state.public_ip or '-'}"
         self.menu_local_ip.title = f"Local IP: {self.state.local_ip or '-'}"
-        self.menu_speed_down.title = f"Down: {human_speed(self.state.down_bps)}"
-        self.menu_speed_up.title = f"Up: {human_speed(self.state.up_bps)}"
+        self.menu_recv_rate.title = f"接收速率: {human_speed(self.state.down_bps)}"
+        self.menu_send_rate.title = f"发送速率: {human_speed(self.state.up_bps)}"
         total_str = f"↓{human_traffic_gb(self.state.down_total)}  ↑{human_traffic_gb(self.state.up_total)}"
         self.menu_traffic.title = f"Traffic: {total_str}"
         self.menu_update_interval.title = f"刷新频率: {self.config.update_interval:.1f}s"
         self.menu_public_refresh.title = f"公网刷新: {int(self.config.public_refresh_interval)}s"
         self.menu_timeout.title = f"请求超时: {self.config.request_timeout:.1f}s"
+
+    def _update_menu_graph_images(self):
+        phase = "a" if self._graph_phase else "b"
+        self._graph_phase = not self._graph_phase
+        recv_path = Path(tempfile.gettempdir()) / "ip_tray" / f"menu_recv_{phase}.png"
+        send_path = Path(tempfile.gettempdir()) / "ip_tray" / f"menu_send_{phase}.png"
+
+        render_single_history_graph(
+            samples=self.down_history,
+            path=recv_path,
+            line_color=(51, 123, 214, 255),
+            fill_color=(74, 144, 226, 70),
+            width=GRAPH_IMAGE_WIDTH,
+            height=GRAPH_IMAGE_HEIGHT,
+        )
+        render_single_history_graph(
+            samples=self.up_history,
+            path=send_path,
+            line_color=(232, 143, 25, 255),
+            fill_color=(245, 166, 35, 70),
+            width=GRAPH_IMAGE_WIDTH,
+            height=GRAPH_IMAGE_HEIGHT,
+        )
+
+        self.menu_recv_graph.set_icon(str(recv_path), dimensions=(GRAPH_IMAGE_WIDTH, GRAPH_IMAGE_HEIGHT), template=False)
+        self.menu_send_graph.set_icon(str(send_path), dimensions=(GRAPH_IMAGE_WIDTH, GRAPH_IMAGE_HEIGHT), template=False)
 
 
     def toggle_notifications(self, sender):

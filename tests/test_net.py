@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from ip_tray.net import (
+    fixed_speed_token,
     get_flag_emoji_for_country,
     get_public_ip_and_country,
     human_speed,
@@ -26,6 +27,13 @@ class NetFormattingTests(TestCase):
     def test_country_flag(self):
         self.assertEqual(get_flag_emoji_for_country("US"), "🇺🇸")
         self.assertEqual(get_flag_emoji_for_country(""), "🏳️")
+
+    def test_fixed_speed_token_has_stable_width(self):
+        samples = [0, 12, 1024, 5 * 1024 * 1024, 8 * 1024 * 1024 * 1024]
+        tokens = [fixed_speed_token(v) for v in samples]
+        self.assertTrue(all(len(token) == 5 for token in tokens))
+        self.assertEqual(fixed_speed_token(1024), "   1K")
+        self.assertEqual(fixed_speed_token(15), "  15B")
 
 
 class PublicIpFallbackTests(TestCase):

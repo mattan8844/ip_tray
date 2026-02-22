@@ -2,4 +2,8 @@ __all__ = [
     "run",
 ]
 
-from .app import run  # noqa: F401
+
+def run():
+    from .app import run as _run
+
+    return _run()
