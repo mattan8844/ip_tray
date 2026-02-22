@@ -27,9 +27,6 @@ from .config import (
 from .menu_graph_image import render_single_history_graph
 
 
-UPDATE_INTERVAL_SEC = 1.0
-PUBLIC_IP_REFRESH_SEC = 30.0
-REQUEST_TIMEOUT_SEC = 3.5
 HISTORY_SECONDS = 300
 GRAPH_IMAGE_WIDTH = 180
 GRAPH_IMAGE_HEIGHT = 32

@@ -16,10 +16,10 @@ python scripts/dev_check.py --skip-network
 
 ```bash
 git add .
-git commit -m "release: v0.2.0"
-git tag -a v0.2.0 -m "Release v0.2.0"
+git commit -m "release: v0.3.0"
+git tag -a v0.3.0 -m "Release v0.3.0"
 git push origin main
-git push origin v0.2.0
+git push origin v0.3.0
 ```
 
 ### 3) 生成构建产物（可选）
@@ -27,7 +27,7 @@ git push origin v0.2.0
 ```bash
 source .venv/bin/activate
 pip install pyinstaller
-pyinstaller --windowed --name "IP Tray" --paths src --hidden-import rumps src/ip_tray/app.py
+python -m PyInstaller --noconfirm "IP Tray.spec"
 ```
 
 构建产物通常位于：
@@ -38,7 +38,7 @@ pyinstaller --windowed --name "IP Tray" --paths src --hidden-import rumps src/ip
 在 GitHub 仓库页面：
 1. 选择 tag：`v0.2.0`
 2. 标题：`v0.2.0`
-3. 描述可直接复制 `CHANGELOG.md` 的 0.2.0 小节
+3. 描述可直接复制 `CHANGELOG.md` 的 0.3.0 小节
 4. 如有产物，上传 `dist` 中的文件作为附件
 
 ---

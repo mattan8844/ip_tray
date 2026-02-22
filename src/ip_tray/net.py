@@ -187,33 +187,3 @@ def human_traffic_gb(bytes_val: float) -> str:
         return f"{val:.1f}GB"
     else:
         return f"{val:.2f}GB"
-
-
-def fixed_speed_token(bps: float) -> str:
-    """Return fixed-width speed token for stable tray title width.
-
-    Format is always 5 chars: 4-digit right-aligned value + unit letter.
-    Units: B/K/M/G (bytes per second scales). Values are capped at 9999.
-    """
-    if bps is None or bps < 0:
-        return "   0B"
-
-    KB = 1024.0
-    MB = KB * 1024.0
-    GB = MB * 1024.0
-
-    if bps >= GB:
-        value = int(round(bps / GB))
-        unit = "G"
-    elif bps >= MB:
-        value = int(round(bps / MB))
-        unit = "M"
-    elif bps >= KB:
-        value = int(round(bps / KB))
-        unit = "K"
-    else:
-        value = int(round(bps))
-        unit = "B"
-
-    value = min(value, 9999)
-    return f"{value:>4}{unit}"

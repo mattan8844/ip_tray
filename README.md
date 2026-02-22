@@ -46,7 +46,7 @@ ip-tray
 可以使用 pyinstaller 或 py2app 打包为独立应用：
 - pyinstaller（推荐简单）：
   - 安装：`pip install pyinstaller`
-  - 构建：`pyinstaller --windowed --name "IP Tray" --paths src --hidden-import rumps src/ip_tray/app.py`
+  - 构建：`python -m PyInstaller --noconfirm "IP Tray.spec"`
 - py2app：
   - 安装：`pip install py2app`
   - 参考 py2app 文档创建 setup 配置后构建。
