@@ -1,12 +1,14 @@
 import time
 import logging
+import threading
 from dataclasses import dataclass
 from collections import deque
 from pathlib import Path
 import tempfile
 
 import rumps
-from Foundation import NSRunLoop, NSRunLoopCommonModes
+import objc
+from Foundation import NSRunLoop, NSRunLoopCommonModes, NSObject
 
 from .net import (
     get_flag_emoji_for_country,
@@ -35,6 +37,18 @@ GRAPH_IMAGE_HEIGHT = 32
 logger = logging.getLogger(__name__)
 
 
+class TrayMenuDelegate(NSObject):
+    def initWithApp_(self, app):
+        self = objc.super(TrayMenuDelegate, self).init()
+        if self is None:
+            return None
+        self.app = app
+        return self
+
+    def menuWillOpen_(self, _):
+        self.app.request_manual_public_refresh()
+
+
 def _cycle_float(current: float, options: tuple[float, ...]) -> float:
     try:
         idx = options.index(current)
@@ -61,10 +75,12 @@ class IPTrayApp(rumps.App):
         self.state = NetState()
         self.config = load_runtime_config()
         self.last_public_refresh = 0.0
-        self.notifications_enabled = self.config.notifications_enabled
         self.up_history: deque[float] = deque(maxlen=HISTORY_SECONDS)
         self.down_history: deque[float] = deque(maxlen=HISTORY_SECONDS)
         self._graph_phase = False
+        self._manual_refresh_lock = threading.Lock()
+        self._manual_refresh_inflight = False
+        self._manual_refresh_result: tuple[str, str, float] | None = None
 
         # Menu items
         self.menu_public_ip = rumps.MenuItem("Public IP: -")
@@ -76,8 +92,6 @@ class IPTrayApp(rumps.App):
         self.menu_send_graph = rumps.MenuItem("")
         self.menu_traffic = rumps.MenuItem("Traffic: -")
         self.menu_separator2 = rumps.separator
-        self.menu_notifications = rumps.MenuItem("通知提醒", callback=self.toggle_notifications)
-        self.menu_notifications.state = self.notifications_enabled
         self.menu_update_interval = rumps.MenuItem("刷新频率: 1.0s", callback=self.toggle_update_interval)
         self.menu_public_refresh = rumps.MenuItem("公网刷新: 30s", callback=self.toggle_public_refresh)
         self.menu_timeout = rumps.MenuItem("请求超时: 3.5s", callback=self.toggle_request_timeout)
@@ -95,7 +109,6 @@ class IPTrayApp(rumps.App):
             self.menu_send_graph,
             self.menu_traffic,
             self.menu_separator2,
-            self.menu_notifications,
             self.menu_update_interval,
             self.menu_public_refresh,
             self.menu_timeout,
@@ -109,6 +122,8 @@ class IPTrayApp(rumps.App):
         self._timer.start()
         if getattr(self._timer, "_nstimer", None) is not None:
             NSRunLoop.currentRunLoop().addTimer_forMode_(self._timer._nstimer, NSRunLoopCommonModes)
+        self._menu_delegate = TrayMenuDelegate.alloc().initWithApp_(self)
+        self._menu._menu.setDelegate_(self._menu_delegate)
         self._update_menu_items()
         self._update_menu_graph_images()
         self._update_tray_flag()
@@ -118,25 +133,16 @@ class IPTrayApp(rumps.App):
 
     def _tick(self, _):
         try:
+            self._apply_manual_public_refresh_result()
             now = time.time()
             # IPs (rate-limited public IP)
             if now - self.last_public_refresh >= self.config.public_refresh_interval or not self.state.public_ip:
-                old_ip, old_cc = self.state.public_ip, self.state.country_code
                 pub_ip, cc = get_public_ip_and_country(timeout=self.config.request_timeout)
                 if pub_ip:
                     self.state.public_ip = pub_ip
                 if cc:
                     self.state.country_code = cc
                 self.last_public_refresh = now
-                # Notify on changes
-                if self.notifications_enabled and (self.state.public_ip != old_ip or self.state.country_code != old_cc):
-                    flag = get_flag_emoji_for_country(self.state.country_code) if self.state.country_code else "🏳️"
-                    rumps.notification(
-                        title="Public IP Changed",
-                        subtitle=f"{flag} {self.state.country_code or ''}",
-                        message=self.state.public_ip or "-",
-                        sound=True,
-                    )
 
             self.state.local_ip = get_local_ip() or self.state.local_ip
 
@@ -162,6 +168,45 @@ class IPTrayApp(rumps.App):
         except Exception:
             logger.exception("Unexpected error in tray tick")
             self.menu_status.title = "状态: 内部错误"
+
+    def request_manual_public_refresh(self):
+        with self._manual_refresh_lock:
+            if self._manual_refresh_inflight:
+                return
+            self._manual_refresh_inflight = True
+        self.menu_status.title = "状态: 手动刷新中"
+        thread = threading.Thread(target=self._manual_public_refresh_worker, daemon=True)
+        thread.start()
+
+    def _manual_public_refresh_worker(self):
+        try:
+            pub_ip, cc = get_public_ip_and_country(timeout=self.config.request_timeout)
+            with self._manual_refresh_lock:
+                self._manual_refresh_result = (pub_ip, cc, time.time())
+        except Exception:
+            logger.exception("Manual public refresh failed")
+        finally:
+            with self._manual_refresh_lock:
+                self._manual_refresh_inflight = False
+
+    def _apply_manual_public_refresh_result(self):
+        with self._manual_refresh_lock:
+            result = self._manual_refresh_result
+            self._manual_refresh_result = None
+
+        if not result:
+            return
+
+        pub_ip, cc, refreshed_at = result
+        if pub_ip:
+            self.state.public_ip = pub_ip
+        if cc:
+            self.state.country_code = cc
+        self.last_public_refresh = refreshed_at
+
+        self._update_tray_flag()
+        self._update_menu_items()
+        self.menu_status.title = "状态: 正常"
 
     def _update_tray_flag(self):
         self.title = get_flag_emoji_for_country(self.state.country_code) if self.state.country_code else "🏳️"
@@ -203,13 +248,6 @@ class IPTrayApp(rumps.App):
         self.menu_recv_graph.set_icon(str(recv_path), dimensions=(GRAPH_IMAGE_WIDTH, GRAPH_IMAGE_HEIGHT), template=False)
         self.menu_send_graph.set_icon(str(send_path), dimensions=(GRAPH_IMAGE_WIDTH, GRAPH_IMAGE_HEIGHT), template=False)
 
-
-    def toggle_notifications(self, sender):
-        # Toggle checkmark state and internal flag
-        sender.state = not bool(sender.state)
-        self.notifications_enabled = bool(sender.state)
-        self.config.notifications_enabled = self.notifications_enabled
-        self._persist_config()
 
     def toggle_update_interval(self, _):
         self.config.update_interval = _cycle_float(self.config.update_interval, UPDATE_INTERVAL_OPTIONS)
